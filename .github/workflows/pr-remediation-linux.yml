@@ -1,0 +1,65 @@
+name: PR remediation Linux comparison
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  NODE_OPTIONS: --max-old-space-size=6144
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+  VITEST_SEGFAULT_RETRY: "3"
+jobs:
+  compare:
+    name: Linux Node 26 - ${{ matrix.source.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        source:
+          - name: upstream-base
+            repository: vitejs/vite
+            sha: dda2a82c357fee0d68b0c2e6f158041c340effa9
+          - name: svg-pr
+            repository: vjymisal0/vite
+            sha: 82a0a8ed668819fbeccc93fd1022d44fe78c12ec
+          - name: preview-pr
+            repository: vjymisal0/vite
+            sha: 7fb859a19d30388f70b24c3e514146ff17c9bc94
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ matrix.source.repository }}
+          ref: ${{ matrix.source.sha }}
+          persist-credentials: false
+      - name: Install pnpm and Node 26
+        uses: pnpm/setup@731dfb6463bbd11c11fd0ee11fe00ed0e36d48a1
+        with:
+          runtime: node@26
+          cache: true
+      - name: Record exact source and runtime
+        run: |
+          git rev-parse HEAD
+          node --version
+          pnpm --version
+      - name: Install Chromium
+        run: pnpm exec playwright install chromium
+      - name: Build workspace packages
+        run: pnpm run build
+      - name: Unit suite with original test ordering
+        id: unit
+        continue-on-error: true
+        run: pnpm run test-unit
+      - name: Focused legacy watch regression
+        id: legacy
+        continue-on-error: true
+        run: pnpm exec vitest run -c vitest.config.e2e.ts --project build playground/legacy/__tests__/watch/legacy-styles-only-entry-watch.spec.ts
+      - name: Report outcomes
+        if: always()
+        env:
+          SOURCE: ${{ matrix.source.name }}
+          SOURCE_SHA: ${{ matrix.source.sha }}
+          UNIT_RESULT: ${{ steps.unit.outcome }}
+          LEGACY_RESULT: ${{ steps.legacy.outcome }}
+        run: |
+          printf '| Source | Commit | Unit suite | Legacy watch |\n|---|---|---|---|\n| %s | %s | %s | %s |\n' "$SOURCE" "$SOURCE_SHA" "$UNIT_RESULT" "$LEGACY_RESULT" >> "$GITHUB_STEP_SUMMARY"
+          test "$UNIT_RESULT" = success && test "$LEGACY_RESULT" = success
